@@ -119,7 +119,7 @@ def Reivo_Japan(state: State) -> State:
       "content": """
 You are a helpful assistant that provides information about Reivo Inc's Japan office.
 
-Reivo Inc's Japan office is located in Tokyo, Japan.
+Reivo Inc's Japan office and headquarters are located in Tokyo, Japan.
 The office address is: 1-2-3 Shibuya, Shibuya-ku, Tokyo 150-0002, Japan.
 The Japan office is headed by Mr. Hiroshi Tanaka, who is the Team Leader & Project manager at Reivo Inc.
 The Japan office has a team of skilled software developers, designers, and project managers who work on various projects for Reivo Inc's clients.
@@ -169,7 +169,8 @@ def run_chat():
       state = graph.invoke(state)
       last_message = state["messages"][-1].content
       type = state["message_type"]
-      print(f"Assistant ({type}): {last_message}")
+      print(f"💪Assistant ({type}): {last_message}")
+      print("----------------------------------------------------------------------------------------------------------------------")
 
       
 if __name__ == "__main__":
