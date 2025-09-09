@@ -5,6 +5,10 @@ from langgraph.graph.message import add_messages
 from langchain.chat_models import init_chat_model
 from pydantic import BaseModel, Field
 from typing_extensions import  TypedDict   
+from langgraph.types import interrupt, Command
+from langgraph.checkpoint.memory import InMemorySaver
+import uuid
+import re
 # from langchain.document_loaders import TextLoader
 
 
@@ -16,6 +20,7 @@ llm = init_chat_model("anthropic:claude-sonnet-4-20250514")
 class State(TypedDict):
   messages: Annotated[list, add_messages]
   message_type: str | None
+  decision: str | None
 
 class messageClassifier(BaseModel):
   message_type: Literal["Reivo-Bangladesh", "Reivo-Japan", "Reivo"] = Field(
@@ -141,6 +146,14 @@ Japan office team members include:
   ])
   return {"messages": [{ "role": "assistant", "content": reply.content }] , "message_type": state["message_type"]}
 
+def contains_email(text):
+  return re.search(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", text) is not None
+
+# write a function that will extract email from text
+def extract_email(text):
+  match = re.search(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", text)
+  return match.group(0) if match else None
+
 graph_builder = StateGraph(State)
 graph_builder.add_node("classifier", messageClassifier.classify_message)
 graph_builder.add_node("router", router)
@@ -155,18 +168,30 @@ graph_builder.add_edge("Reivo", END)
 graph_builder.add_edge("Reivo-Bangladesh", END)
 graph_builder.add_edge("Reivo-Japan", END)
 
-graph = graph_builder.compile()
+checkpointer = InMemorySaver()
+graph = graph_builder.compile(checkpointer=checkpointer)
 
 
 def run_chat():
-   state = {"messages": [], "message_type": None}
+   state = {"messages": [], "message_type": None, "decision": None}
+   config = {"configurable": {"thread_id": str(uuid.uuid4())}}
    while True:
       user_input = input("Your message: ")
       if user_input == "exit":
          print("Exiting chat.")
          break
       state["messages"].append({"role": "user", "content": user_input})
-      state = graph.invoke(state)
+      if contains_email(user_input):
+        print("--- Human Approval Required for Email ---")
+        print("User entered email:", extract_email(user_input))
+        resume = input("Type 'approve' or 'reject': ").strip()
+        state["decision"] = "approved" if resume == "approve" else "rejected"
+        if state["decision"] == "approved":
+            print("✅ Email approved.")
+        else:
+            print("❌ Email rejected.")
+        break
+      state = graph.invoke(state, config=config)
       last_message = state["messages"][-1].content
       type = state["message_type"]
       print(f"💪Assistant ({type}): {last_message}")
@@ -175,3 +200,4 @@ def run_chat():
       
 if __name__ == "__main__":
   run_chat()
+
