@@ -9,26 +9,29 @@ from langgraph.types import interrupt, Command
 from langgraph.checkpoint.memory import InMemorySaver
 import uuid
 import re
+from langchain_core.messages import AIMessage, HumanMessage
+from typing import Union
 # from langchain.document_loaders import TextLoader
 
 load_dotenv()
 llm = init_chat_model("anthropic:claude-sonnet-4-20250514")
 
 
+
 class State(TypedDict):
-  messages: Annotated[list, add_messages]
+  messages: Annotated[list[Union[AIMessage, HumanMessage, dict]], add_messages]
   message_type: str | None
   decision: str | None
+  show_ai_message: bool | None
 
 # Interrupt node for email approval
 def email_approval_node(state: State) -> Command[Literal["approved_path", "rejected_path"]]:
   # print("=== Email Approval Node Invoked ===")
   email = extract_email(state["messages"][-1].content)
   decision = interrupt({
-    "question": "{email}  this  email address is correct ?",
+    "question": "{email}  this  email address is correct ?".format(email=email),
     "email": email
   })
-  print(f"=== Decision made: {decision} ===")
   if decision == "approved":
     return Command(goto="approved_path", update={"decision": "approved"})
   else:
@@ -50,7 +53,6 @@ class messageClassifier(BaseModel):
   )
 
   def classify_message(state: State) -> str:
-    last_message = state["messages"][-1]
     classifier_llm = llm.with_structured_output(messageClassifier)
     result = classifier_llm.invoke([
       {
@@ -67,7 +69,7 @@ If the message is related to Reivo in general, classify it as "Reivo".
       },
       {
         "role": "user",
-        "content":  last_message.content
+        "content":  last_human_message(state)
       }
     ])
     return {"message_type": result.message_type}
@@ -83,7 +85,6 @@ def router(state: State) -> State:
   
 
 def Reivo(state: State) -> State:
-  last_message = state["messages"][-1]
   reply = llm.invoke([
     {
       "role": "system",
@@ -97,18 +98,18 @@ Reivo Inc's core values are innovation, quality, customer satisfaction, and team
 Reivo Inc's clients include startups, SMEs, and large enterprises across various industries such as finance, healthcare, e-commerce, education, and more.
 Reivo Inc's services include custom software development, IT consulting, project management, quality assurance, and support and maintenance.
 Reivo Inc's team consists of experienced software engineers, designers, project managers, and business analysts who are passionate about technology and delivering value to clients.
+If the user message is related to communication ask him for his email address for meeting scheduling.
 """
     },
     {
       "role": "user",
-      "content":  last_message.content
+      "content":  last_human_message(state)
     }
   ])
 
-  return {"messages": [{ "role": "assistant", "content": reply.content }] , "message_type": state["message_type"]}
+  return {"messages": [AIMessage(content=reply.content)] , "message_type": state["message_type"]}
 
 def Reivo_Bangladesh(state: State) -> State:
-  last_message = state["messages"][-1]
   reply = llm.invoke([
     {
       "role": "system",
@@ -132,13 +133,12 @@ Shajalal's speciality is Full Stack Developer at Reivo Inc with PHP | Laravel | 
     },
     {
       "role": "user",
-      "content":  last_message.content
+      "content":  last_human_message(state)
     }
   ])
-  return {"messages": [{ "role": "assistant", "content": reply.content }] , "message_type": state["message_type"]}
+  return {"messages": [AIMessage(content=reply.content)] , "message_type": state["message_type"]}
 
 def Reivo_Japan(state: State) -> State:
-  last_message = state["messages"][-1]
   reply = llm.invoke([
     {
       "role": "system",
@@ -162,10 +162,10 @@ Japan office team members include:
     },
     {
       "role": "user",
-      "content":  last_message.content
+      "content":  last_human_message(state)
     }
   ])
-  return {"messages": [{ "role": "assistant", "content": reply.content }] , "message_type": state["message_type"]}
+  return {"messages": [AIMessage(content=reply.content)] , "message_type": state["message_type"]}
 
 
 def contains_email(text):
@@ -207,15 +207,31 @@ checkpointer = InMemorySaver()
 graph = graph_builder.compile(checkpointer=checkpointer)
 
 
+def get_last_ai_message(state):
+  for msg in reversed(state["messages"]):
+      if isinstance(msg, dict) and msg.get("role") == "assistant":
+          return msg.get("content", "")
+      elif isinstance(msg, AIMessage):
+          return msg.content
+  return None
+
+def last_human_message(state):
+  for msg in reversed(state["messages"]):
+      if isinstance(msg, dict) and msg.get("role") == "user":
+          return msg.get("content", "")
+      elif isinstance(msg, HumanMessage):
+          return msg.content
+  return None
+
 def run_chat():
-  state = {"messages": [], "message_type": None, "decision": None}
   config = {"configurable": {"thread_id": str(uuid.uuid4())}}
+  state = {"messages": [], "message_type": None, "decision": None, "show_ai_message": True}
   while True:
     user_input = input("Your message: ")
     if user_input == "exit":
       print("Exiting chat.")
       break
-    state["messages"].append({"role": "user", "content": user_input})
+    state["messages"].append(HumanMessage(content=user_input))
     result = graph.invoke(state, config=config)
     # check for interrupt
     while True:
@@ -223,20 +239,21 @@ def run_chat():
         interrupt_obj = result.get("__interrupt__")
         if isinstance(interrupt_obj, list) and len(interrupt_obj) > 0:
             interrupt_data = interrupt_obj[0].value
-            print(interrupt_data.get("question", ""), interrupt_data.get("email", ""))
+            print(interrupt_data.get("question", ""))
         elif hasattr(interrupt_obj, "value"):
             interrupt_data = interrupt_obj.value
-            print(interrupt_data.get("question", ""), interrupt_data.get("email", ""))
+            print(interrupt_data.get("question", ""))
         else:
             print(interrupt_obj)
         resume = input("Type 'approved' or 'rejected': ").strip()
         result = graph.invoke(Command(resume=resume), config=config)
+        result.update({"show_ai_message": False})
       else:
         break
-      state = result
+    state = result
     # Print assistant response if available
-    if state.get("messages") and len(state["messages"]) > 0:
-      last_message = state["messages"][-1]["content"]
+    if state.get("messages") and len(state["messages"]) > 0 and state.get("show_ai_message", True):
+      last_message = get_last_ai_message(state)
       type = state.get("message_type", "")
       print(f"💪Assistant ({type}): {last_message}")
       print("----------------------------------------------------------------------------------------------------------------------")
