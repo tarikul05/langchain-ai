@@ -11,16 +11,37 @@ import uuid
 import re
 # from langchain.document_loaders import TextLoader
 
-
-
 load_dotenv()
-
 llm = init_chat_model("anthropic:claude-sonnet-4-20250514")
+
 
 class State(TypedDict):
   messages: Annotated[list, add_messages]
   message_type: str | None
   decision: str | None
+
+# Interrupt node for email approval
+def email_approval_node(state: State) -> Command[Literal["approved_path", "rejected_path"]]:
+  # print("=== Email Approval Node Invoked ===")
+  email = extract_email(state["messages"][-1].content)
+  decision = interrupt({
+    "question": "{email}  this  email address is correct ?",
+    "email": email
+  })
+  print(f"=== Decision made: {decision} ===")
+  if decision == "approved":
+    return Command(goto="approved_path", update={"decision": "approved"})
+  else:
+    return Command(goto="rejected_path", update={"decision": "rejected"})
+
+# Terminal nodes for approval/rejection
+def approved_path(state: State) -> State:
+  print("✅ Email approved by human.approved_path")
+  return state
+
+def rejected_path(state: State) -> State:
+  print("❌ Email rejected by human.rejected_path")
+  return state
 
 class messageClassifier(BaseModel):
   message_type: Literal["Reivo-Bangladesh", "Reivo-Japan", "Reivo"] = Field(
@@ -146,6 +167,7 @@ Japan office team members include:
   ])
   return {"messages": [{ "role": "assistant", "content": reply.content }] , "message_type": state["message_type"]}
 
+
 def contains_email(text):
   return re.search(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", text) is not None
 
@@ -160,40 +182,62 @@ graph_builder.add_node("router", router)
 graph_builder.add_node("Reivo", Reivo)
 graph_builder.add_node("Reivo-Bangladesh", Reivo_Bangladesh)
 graph_builder.add_node("Reivo-Japan", Reivo_Japan)
+graph_builder.add_node("email_approval", email_approval_node)
+graph_builder.add_node("approved_path", approved_path)
+graph_builder.add_node("rejected_path", rejected_path)
 
 graph_builder.add_edge(START, "classifier")
-graph_builder.add_edge("classifier", "router")
+# Conditional edge from classifier to email_approval if email detected, else router
+graph_builder.add_conditional_edges(
+  "classifier",
+  lambda state: "email_approval" if contains_email(state["messages"][-1].content) else "router",
+  {
+    "email_approval": "email_approval",
+    "router": "router"
+  }
+)
 graph_builder.add_conditional_edges("router", lambda state: state.get("next"), {"Reivo": "Reivo", "Reivo-Bangladesh": "Reivo-Bangladesh", "Reivo-Japan": "Reivo-Japan"})
 graph_builder.add_edge("Reivo", END)
 graph_builder.add_edge("Reivo-Bangladesh", END)
 graph_builder.add_edge("Reivo-Japan", END)
+graph_builder.add_edge("approved_path", END)
+graph_builder.add_edge("rejected_path", END)
 
 checkpointer = InMemorySaver()
 graph = graph_builder.compile(checkpointer=checkpointer)
 
 
 def run_chat():
-   state = {"messages": [], "message_type": None, "decision": None}
-   config = {"configurable": {"thread_id": str(uuid.uuid4())}}
-   while True:
-      user_input = input("Your message: ")
-      if user_input == "exit":
-         print("Exiting chat.")
-         break
-      state["messages"].append({"role": "user", "content": user_input})
-      if contains_email(user_input):
-        print("--- Human Approval Required for Email ---")
-        print("User entered email:", extract_email(user_input))
-        resume = input("Type 'approve' or 'reject': ").strip()
-        state["decision"] = "approved" if resume == "approve" else "rejected"
-        if state["decision"] == "approved":
-            print("✅ Email approved.")
+  state = {"messages": [], "message_type": None, "decision": None}
+  config = {"configurable": {"thread_id": str(uuid.uuid4())}}
+  while True:
+    user_input = input("Your message: ")
+    if user_input == "exit":
+      print("Exiting chat.")
+      break
+    state["messages"].append({"role": "user", "content": user_input})
+    result = graph.invoke(state, config=config)
+    # check for interrupt
+    while True:
+      if result.get("__interrupt__", False):
+        interrupt_obj = result.get("__interrupt__")
+        if isinstance(interrupt_obj, list) and len(interrupt_obj) > 0:
+            interrupt_data = interrupt_obj[0].value
+            print(interrupt_data.get("question", ""), interrupt_data.get("email", ""))
+        elif hasattr(interrupt_obj, "value"):
+            interrupt_data = interrupt_obj.value
+            print(interrupt_data.get("question", ""), interrupt_data.get("email", ""))
         else:
-            print("❌ Email rejected.")
+            print(interrupt_obj)
+        resume = input("Type 'approved' or 'rejected': ").strip()
+        result = graph.invoke(Command(resume=resume), config=config)
+      else:
         break
-      state = graph.invoke(state, config=config)
-      last_message = state["messages"][-1].content
-      type = state["message_type"]
+      state = result
+    # Print assistant response if available
+    if state.get("messages") and len(state["messages"]) > 0:
+      last_message = state["messages"][-1]["content"]
+      type = state.get("message_type", "")
       print(f"💪Assistant ({type}): {last_message}")
       print("----------------------------------------------------------------------------------------------------------------------")
 
