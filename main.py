@@ -32,18 +32,18 @@ def email_approval_node(state: State) -> Command[Literal["approved_path", "rejec
     "question": "{email}  this  email address is correct ?".format(email=email),
     "email": email
   })
-  if decision == "approved":
-    return Command(goto="approved_path", update={"decision": "approved"})
+  if decision == "yes":
+    return Command(goto="approved_path", update={"decision": "yes"})
   else:
-    return Command(goto="rejected_path", update={"decision": "rejected"})
+    return Command(goto="rejected_path", update={"decision": "no"})
 
 # Terminal nodes for approval/rejection
 def approved_path(state: State) -> State:
-  print("✅ Email approved by human.approved_path")
+  print("✅ Thank you! We will reach out to you soon via the provided email address.")
   return state
 
 def rejected_path(state: State) -> State:
-  print("❌ Email rejected by human.rejected_path")
+  print("❌ I'm sorry for the inconvenience. Please provide your email address again.")
   return state
 
 class messageClassifier(BaseModel):
@@ -245,7 +245,7 @@ def run_chat():
             print(interrupt_data.get("question", ""))
         else:
             print(interrupt_obj)
-        resume = input("Type 'approved' or 'rejected': ").strip()
+        resume = input("Type 'yes' or 'no': ").strip()
         result = graph.invoke(Command(resume=resume), config=config)
         result.update({"show_ai_message": False})
       else:
