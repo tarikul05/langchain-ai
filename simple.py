@@ -72,6 +72,9 @@ def run_chat():
         if not user_input.strip():
             print("Message cannot be empty.")
             continue
+        if user_input.lower() in {"exit", "quit"}:
+            print("Exiting chat.")
+            break
         state["messages"].append({"role": "user", "content": user_input})
         state = graph.invoke(state, config=config)
         # If interrupted for approval, resume with human input
